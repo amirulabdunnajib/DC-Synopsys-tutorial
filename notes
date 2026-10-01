@@ -1,0 +1,156 @@
+Yes — **this is the view I meant.** You have successfully descended into `I_DECODE`.
+
+What you’re seeing is Design Compiler’s **generic implementation of the `DECODE` RTL**, before technology mapping. The lab specifically says that before compile you will see **GTECH components**, rather than gates from the target technology library. :chatgpt-content-reference{index="0"}
+
+The reason it looks much more complicated than your VHDL is that DC has converted behavioral code such as:
+
+```vhdl
+if (Crnt_Instrn(25)) = '1' then
+    Neg   := not Neg_Flag;
+    Carry := not Carry_Flag;
+    Zro   := not Zro_Flag;
+...
+end if;
+```
+
+into actual logic structures such as **inverters, muxes, AND/OR gates and comparison logic**.
+
+For example, this part:
+
+```vhdl
+if (Crnt_Instrn(25)) = '1' then
+    Neg := not Neg_Flag;
+else
+    Neg := Neg_Flag;
+end if;
+```
+
+roughly becomes hardware like:
+
+```text
+                ┌── NOT ──┐
+Neg_Flag ───────┤         │
+                │         ▼
+                │       ┌─────┐
+                └──────►│ MUX │──► Neg
+                        └──┬──┘
+                           │
+                  Crnt_Instrn(25)
+```
+
+So some of those triangular-looking shapes in your schematic are implementing selections created by the `if/else` statements.
+
+Likewise, your VHDL has:
+
+```vhdl
+if (Crnt_Instrn(23 downto 16) = "00000000") then
+    Take_Branch <= Neg;
+elsif (Crnt_Instrn(23 downto 16) = "00000001") then
+    Take_Branch <= Zro;
+elsif (Crnt_Instrn(23 downto 16) = "00000010") then
+    Take_Branch <= Carry;
+elsif (Crnt_Instrn(23 downto 16) = "00111111") then
+    Take_Branch <= Jmp;
+```
+
+That requires DC to build logic that examines **eight instruction bits**, determines which pattern matches, and selects the appropriate condition. That's why you see a fairly large network of logic on the left/middle.
+
+Then further to the right, this section:
+
+```vhdl
+case CurrentState is
+    when WRITEBACK =>
+
+        if (Crnt_Instrn(31 downto 30) = "00") then
+
+            if ((Crnt_Instrn(29) = '1' or
+                 Crnt_Instrn(28) = '1') and
+                 Take_Branch = '1') then
+
+                Brnch_Addr <= '1';
+
+            end if;
+
+            if (Crnt_Instrn(27) = '1') then
+                Rtn_Addr <= '1';
+            end if;
+
+        end if;
+```
+
+gets translated into more **decode + AND/OR + mux logic**.
+
+And finally:
+
+```vhdl
+if (Rtn_Addr ='1' or Brnch_Addr = '1') then
+    Incrmnt_PC <= '0';
+else
+    Incrmnt_PC <= '1';
+end if;
+```
+
+produces the logic leading toward your three outputs:
+
+```text
+Incrmnt_PC
+Ld_Brnch_Addr
+Ld_Rtn_Addr
+```
+
+So conceptually your entire screenshot is doing this:
+
+```text
+             Crnt_Instrn
+                  │
+                  ▼
+        ┌───────────────────┐
+Flags → │ condition decoding │
+        └─────────┬─────────┘
+                  │
+             Take_Branch
+                  │
+                  ▼
+        ┌───────────────────┐
+State → │ WRITEBACK decoding │
+        │ + instruction bits │
+        └─────────┬─────────┘
+                  │
+       ┌──────────┼──────────┐
+       ▼          ▼          ▼
+  Incrmnt_PC  Ld_Brnch   Ld_Rtn
+```
+
+### Why isn't this the final gate-level netlist yet?
+
+This is the important part.
+
+Right now DC has translated your VHDL into something logically equivalent to hardware, but it hasn't yet said:
+
+> “Use this exact NAND gate, this exact inverter, this exact mux from `sc_max.db`.”
+
+That happens later when we run:
+
+```tcl
+compile_ultra -no_autoungroup
+```
+
+So right now:
+
+```text
+VHDL
+ ↓
+generic GTECH logic     ← YOU ARE HERE
+ ↓
+compile_ultra
+ ↓
+real cells from sc_max.db
+```
+
+After compile, if you revisit this schematic, it should look different because the generic logic will have been **optimized and technology-mapped**.
+
+Also, don't worry about trying to understand every gate in this screenshot. That's not really the purpose of this step. The key lesson is:
+
+> **Your relatively compact behavioral RTL has already been elaborated into a network of actual logical hardware structures, but those structures are still generic rather than technology-specific.**
+
+Now you can **right-click → Back** to return to the TOP schematic. Then we're essentially done with the schematic exploration portion and can proceed to **Task 6: constraints**, where `TOP.con` becomes important.
